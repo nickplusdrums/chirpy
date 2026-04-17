@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"errors"
 
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -104,11 +105,13 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 	params := parameters{}
 	err := decoder.Decode(&params)
 	if err != nil {
+		log.Printf("Error in decoding: %v", err)
 		w.WriteHeader(500)
 		return
 	}
 	user, err := cfg.dbQuery.CreateUser(r.Context(), params.Email)
 	if err != nil {
+		log.Printf("Error in running query: %v", err)
 		w.WriteHeader(500)
 		return
 	}
@@ -174,6 +177,53 @@ func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (cfg apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
+	chirps, err := cfg.dbQuery.GetChirps(r.Context())
+	if err != nil {
+		log.Printf("Error! %v", err)
+		respondWithError(w, 500, "Failed to run Query")
+	}
+	responseChirps := []Chirp{}
+	for _, chirp := range chirps {
+		responseChirps = append(responseChirps, Chirp{
+			ID:			chirp.ID,
+			CreatedAt:	chirp.CreatedAt,
+			UpdatedAt:	chirp.UpdatedAt,
+			Body:		chirp.Body,
+			UserID:		chirp.UserID,
+		})
+	}
+	respondWithJson(w, 200, responseChirps)
+}
+
+func (cfg apiConfig) handlerGetChirp(w http.ResponseWriter, r *http.Request) {
+	
+	chirpIDstring := r.PathValue("chirpID")
+	chirpID, err := uuid.Parse(chirpIDstring)
+	if err != nil {
+		log.Printf("Error: %v", err)
+		respondWithError(w, 500, "Not a valid Chirp ID")
+	}
+
+	chirp, err := cfg.dbQuery.GetChirp(r.Context(), chirpID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondWithError(w, 404, "Chirp not found.")
+		} else {
+			log.Printf("Error! %v", err)
+			respondWithError(w, 500, "Failed to run Query")
+		}
+	}
+	responseChirp := Chirp{
+		ID:			chirp.ID,
+		CreatedAt:	chirp.CreatedAt,
+		UpdatedAt:	chirp.UpdatedAt,
+		Body:		chirp.Body,
+		UserID:		chirp.UserID,
+	}
+	respondWithJson(w, 200, responseChirp)
+}
+
 func main() {
 
 	godotenv.Load()
@@ -197,6 +247,8 @@ func main() {
 	mux.HandleFunc("POST /admin/reset", cfg.handlerReset)
 	mux.HandleFunc("POST /api/users", cfg.handlerCreateUser)
 	mux.HandleFunc("POST /api/chirps", cfg.handlerChirp)
+	mux.HandleFunc("GET /api/chirps", cfg.handlerGetChirps)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.handlerGetChirp)
 	err = server.ListenAndServe()
 	if err != nil {
 		return

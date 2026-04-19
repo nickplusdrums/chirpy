@@ -16,13 +16,14 @@ import (
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"github.com/nickplusdrums/chirpy/internal/database"
+	"github.com/nickplusdrums/chirpy/internal/auth"
 )
 
 type User struct {
 	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
+	CreatedAt	time.Time	`json:"created_at"`
+	UpdatedAt	time.Time	`json:"updated_at"`
+	Email		string		`json:"email"`
 }
 
 type Chirp struct {
@@ -99,7 +100,8 @@ func respondWithJson(w http.ResponseWriter, code int, payload interface{}) {
 
 func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Email string `json:"email"`
+		Password	string `json:"password"`
+		Email		string `json:"email"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
@@ -109,12 +111,29 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 		w.WriteHeader(500)
 		return
 	}
-	user, err := cfg.dbQuery.CreateUser(r.Context(), params.Email)
+	if params.Password == "" {
+		respondWithError(w, 500, "Password field must not be blank.")
+		return
+	}
+
+	hp, err := auth.HashPassword(params.Password)
+	
+	if err != nil {
+		respondWithError(w, 500, "Failed to Call Hash Password")
+		return
+	}
+
+	user, err := cfg.dbQuery.CreateUser(r.Context(), database.CreateUserParams{
+		Email:			params.Email,
+		HashedPassword: hp,
+	})
+	
 	if err != nil {
 		log.Printf("Error in running query: %v", err)
 		w.WriteHeader(500)
 		return
 	}
+
 	responseUser := User{
 		ID:        user.ID,
 		CreatedAt: user.CreatedAt,
@@ -208,7 +227,7 @@ func (cfg apiConfig) handlerGetChirp(w http.ResponseWriter, r *http.Request) {
 	chirp, err := cfg.dbQuery.GetChirp(r.Context(), chirpID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			respondWithError(w, 404, "Chirp not found.")
+			respondWithError(w, 404, "chirp not found.")
 		} else {
 			log.Printf("Error! %v", err)
 			respondWithError(w, 500, "Failed to run Query")
@@ -222,6 +241,53 @@ func (cfg apiConfig) handlerGetChirp(w http.ResponseWriter, r *http.Request) {
 		UserID:		chirp.UserID,
 	}
 	respondWithJson(w, 200, responseChirp)
+}
+
+func (cfg apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Password	string `json:"password"`
+		Email		string `json:"email"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondWithError(w, 404, "User not found")
+			return
+		}
+		respondWithError(w, 500, "Failed to decode JSON")
+		return
+	}
+
+	user, err := cfg.dbQuery.GetUserByEmail(r.Context(), params.Email)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondWithError(w, 404, "User not found")
+			return
+		}
+		respondWithError(w, 500, "Failed to run Query")
+		return
+	}
+	match, err := auth.CheckPasswordHash(params.Password, user.HashedPassword)
+	if err != nil {
+		respondWithError(w, 500, "Failed to Run auth.CheckPasswordHash")
+		return
+	}
+
+	if !match {
+		respondWithError(w, 401, "Incorrect email or password")
+		return
+	}
+	
+	returnUser := User {
+		ID:			user.ID,
+		CreatedAt:	user.CreatedAt,
+		UpdatedAt:	user.UpdatedAt,
+		Email:		user.Email,
+	}
+	respondWithJson(w, 200, returnUser)
 }
 
 func main() {
@@ -249,6 +315,7 @@ func main() {
 	mux.HandleFunc("POST /api/chirps", cfg.handlerChirp)
 	mux.HandleFunc("GET /api/chirps", cfg.handlerGetChirps)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.handlerGetChirp)
+	mux.HandleFunc("POST /api/login", cfg.handlerLogin)
 	err = server.ListenAndServe()
 	if err != nil {
 		return

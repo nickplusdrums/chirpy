@@ -20,7 +20,7 @@ import (
 )
 
 type User struct {
-	ID        uuid.UUID `json:"id"`
+	ID			uuid.UUID	`json:"id"`
 	CreatedAt	time.Time	`json:"created_at"`
 	UpdatedAt	time.Time	`json:"updated_at"`
 	Email		string		`json:"email"`
@@ -35,9 +35,10 @@ type Chirp struct {
 }
 
 type apiConfig struct {
-	fileserverHits atomic.Int32
-	dbQuery        *database.Queries
-	platform       string
+	fileserverHits	atomic.Int32
+	dbQuery			*database.Queries
+	platform		string
+	jwtSecret		string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -161,7 +162,6 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Body   string    `json:"body"`
-		UserID uuid.UUID `json:"user_id"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
@@ -171,14 +171,28 @@ func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 500, "Failed to Decode")
 		return
 	}
+	
+	// lets validate the user first
 
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "Failed to call GetBearerToken")
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		respondWithError(w, 401, "Failed to call Validate JWT")
+		return
+	}
+	
 	if len(params.Body) > 140 {
 		respondWithError(w, 400, "Chirp is too long")
 		return
 	} else {
 		chirp, err := cfg.dbQuery.CreateChirp(r.Context(), database.CreateChirpParams{
 			Body:   cleanString(params.Body),
-			UserID: params.UserID,
+			UserID: userID,
 		})
 		if err != nil {
 			log.Printf("Error! %v", err)
@@ -190,7 +204,7 @@ func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 			CreatedAt: chirp.CreatedAt,
 			UpdatedAt: chirp.UpdatedAt,
 			Body:      chirp.Body,
-			UserID:    chirp.UserID,
+			UserID:    userID,
 		}
 		respondWithJson(w, 201, responseChirp)
 	}
@@ -245,8 +259,8 @@ func (cfg apiConfig) handlerGetChirp(w http.ResponseWriter, r *http.Request) {
 
 func (cfg apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Password	string `json:"password"`
-		Email		string `json:"email"`
+		Password	string	`json:"password"`
+		Email		string	`json:"email"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -281,11 +295,34 @@ func (cfg apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	returnUser := User {
+	accessExpDuration := time.Duration(60) * time.Minute
+	refreshExpDuration := time.Duration(60) * time.Day
+
+	accessToken, err := auth.MakeJWT(user.ID, cfg.jwtSecret, accessExpDuration)
+	if err != nil {
+		respondWithError(w, 500, "Error making Access JWT")
+		return
+	}
+	refreshToken, err := auth.MakeJWT(user.ID, cfg.jwtSecret, refreshExpDuration)
+	if err != nil {
+		respondWithError(w, 500, "Error making Refresh JWT")
+		return
+	}
+	
+	type response struct {
+		ID			uuid.UUID	`json:"id"`
+		CreatedAt	time.Time	`json:"created_at"`
+		UpdatedAt	time.Time	`json:"updated_at"`
+		Email		string		`json:"email"`
+		Token		string		`json:"token"`
+	}
+
+	returnUser := response {
 		ID:			user.ID,
 		CreatedAt:	user.CreatedAt,
 		UpdatedAt:	user.UpdatedAt,
 		Email:		user.Email,
+		Token:		token,
 	}
 	respondWithJson(w, 200, returnUser)
 }
@@ -302,6 +339,7 @@ func main() {
 	}
 	cfg.dbQuery = database.New(db)
 	cfg.platform = os.Getenv("PLATFORM")
+	cfg.jwtSecret = os.Getenv("JWT")
 
 	mux := http.NewServeMux()
 	var server http.Server

@@ -44,5 +44,12 @@ Content-Type: application/json
 
 {
     "body": "This is my Chirp!",
-    "user_id": "123e4567-e89b-12d3-a456-426614174000"
+    "user_id": "5af6823a-7789-46fb-b358-06e753c389d9"
 }
+
+###
+
+GET http://localhost:8080/api/chirps
+Content-Type: application/json
+
+

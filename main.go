@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 	"errors"
+	"sort"
 
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -175,7 +176,7 @@ func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 500, "Failed to Decode")
 		return
 	}
-	
+
 	// lets validate the user first
 
 	token, err := auth.GetBearerToken(r.Header)
@@ -215,12 +216,36 @@ func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
-	chirps, err := cfg.dbQuery.GetChirps(r.Context())
+	
+	var chirps []database.Chirp
+	var err error
+
+	authorID := r.URL.Query().Get("author_id")
+	if authorID == "" {
+		chirps, err = cfg.dbQuery.GetChirps(r.Context())
+	} else {
+		parsedID, err := uuid.Parse(authorID)
+		if err != nil {
+			respondWithError(w, 500, "Failed to parse UUID")
+			return
+		}
+		chirps, err = cfg.dbQuery.GetChirpsByAuthor(r.Context(), parsedID)
+	}
+
 	if err != nil {
 		log.Printf("Error! %v", err)
 		respondWithError(w, 500, "Failed to run Query")
 		return
 	}
+	
+	sorted := r.URL.Query().Get("sort")
+	log.Printf("Value is: %v", sorted)
+	if sorted == "desc" {
+		sort.Slice(chirps, func(i, j int) bool {
+			return chirps[i].CreatedAt.After(chirps[j].CreatedAt)
+		})
+	}
+
 	responseChirps := []Chirp{}
 	for _, chirp := range chirps {
 		responseChirps = append(responseChirps, Chirp{
